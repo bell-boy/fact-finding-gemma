@@ -13,6 +13,8 @@ tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-2b")
 # Define the SPARQL endpoint
 sparql = SPARQLWrapper("https://query.wikidata.org/sparql")
 
+n_athletes = 9999
+
 # Set your SPARQL query
 query = """
 PREFIX wd: <http://www.wikidata.org/entity/>
@@ -20,17 +22,38 @@ PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
 SELECT DISTINCT ?athlete ?athleteLabel ?sport ?sportLabel WHERE {
-  ?athlete wdt:P31 wd:Q5;         # Instance of human
-           wdt:P641 ?sport.       # Sport played
-
-  VALUES ?sport {wd:Q41323 wd:Q5369 wd:Q5372}  # Football, Baseball, Basketball
+  {
+    SELECT DISTINCT ?athlete ?sport WHERE {
+      ?athlete wdt:P31 wd:Q5;         # Instance of human
+               wdt:P641 wd:Q41323.    # American football
+      BIND(wd:Q41323 AS ?sport)
+    }
+    LIMIT %d
+  }
+  UNION
+  {
+    SELECT DISTINCT ?athlete ?sport WHERE {
+      ?athlete wdt:P31 wd:Q5;         # Instance of human
+               wdt:P641 wd:Q5369.     # Baseball
+      BIND(wd:Q5369 AS ?sport)
+    }
+    LIMIT %d
+  }
+  UNION
+  {
+    SELECT DISTINCT ?athlete ?sport WHERE {
+      ?athlete wdt:P31 wd:Q5;         # Instance of human
+               wdt:P641 wd:Q5372.     # Basketball
+      BIND(wd:Q5372 AS ?sport)
+    }
+    LIMIT %d
+  }
 
   SERVICE wikibase:label {
     bd:serviceParam wikibase:language "en".
   }
 }
-LIMIT 10000
-"""
+""" % ((n_athletes//3), (n_athletes//3), (n_athletes//3))
 
 # Set the query and return format
 sparql.setQuery(query)
@@ -56,23 +79,26 @@ for result in tqdm(results["results"]["bindings"], position=0, leave=True):
 
     logits = gemma2b(**tokens).logits
     probablities = logits.softmax(dim=-1)
-    predicted_sport = tokenizer.convert_ids_to_tokens(probablities[:, -1, :].argmax(dim=-1))[0]
-    #print(athlete, sport, predicted_sport)
+    sport_prob = probablities[:, -1, :].max(dim=-1).values
+    sport_token = probablities[:, -1, :].max(dim=-1).indices
+    predicted_sport = tokenizer.convert_ids_to_tokens(sport_token)[0]
 
     new_row = {
       "Name": athlete,
       "Sport": sport,
+      "Sport Token": predicted_sport,
       "Last Name Index": last_name_index
     }
 
-    if sport == "American football" and predicted_sport == "▁football":
-      data_rows.append(new_row)
+    if sport_token.item() > .5:
+      if sport == "American football" and predicted_sport == "▁football":
+        data_rows.append(new_row)
 
-    if sport == "baseball" and predicted_sport == "▁baseball":
-      data_rows.append(new_row)
+      if sport == "baseball" and predicted_sport == "▁baseball":
+        data_rows.append(new_row)
 
-    if sport == "basketball" and predicted_sport == "▁basketball":
-      data_rows.append(new_row)
+      if sport == "basketball" and predicted_sport == "▁basketball":
+        data_rows.append(new_row)
 
     
 dataset = pd.DataFrame(data_rows)
